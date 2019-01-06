@@ -10,18 +10,21 @@ import (
 	"reflect"
 	"strconv"
 
+	"cloud.google.com/go/bigtable"
 	"cloud.google.com/go/storage"
 	"github.com/google/uuid"
 	"github.com/olivere/elastic"
 )
 
 const (
-	POST_INDEX = "post"
-	POST_TYPE  = "post"
+	PostIndex = "post"
+	PostType  = "post"
 
-	DISTANCE    = "200km"
-	ES_URL      = "http://35.196.127.195:9200"
-	BUCKET_NAME = "around-postimages"
+	Distance         = "200km"
+	ESURL            = "http://35.196.39.116:9200"
+	BucketName       = "around-postimages"
+	ProjectID        = "around-225723"
+	BigTableInstance = "around-post"
 )
 
 type Location struct {
@@ -33,7 +36,7 @@ type Post struct {
 	User     string   `json:"user"`
 	Message  string   `json:"message"`
 	Location Location `json:"location"`
-	Url      string   `json:"url"`
+	URL      string   `json:"url"`
 }
 
 func main() {
@@ -72,13 +75,13 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("Image is not available %v.\n", err)
 		return
 	}
-	attrs, err := saveToGCS(file, BUCKET_NAME, id)
+	attrs, err := saveToGCS(file, BucketName, id)
 	if err != nil {
 		http.Error(w, "Failed to save image to GCS", http.StatusInternalServerError)
 		fmt.Printf("Failed to save image to GCS %v.\n", err)
 		return
 	}
-	p.Url = attrs.MediaLink
+	p.URL = attrs.MediaLink
 
 	err = saveToES(p, id)
 	if err != nil {
@@ -87,6 +90,8 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Printf("Saved one post to ElasticSearch: %s", p.Message)
+
+	saveToBT(p, id)
 }
 
 func handlerSearch(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +103,7 @@ func handlerSearch(w http.ResponseWriter, r *http.Request) {
 	lat, _ := strconv.ParseFloat(r.URL.Query().Get("lat"), 64)
 	lon, _ := strconv.ParseFloat(r.URL.Query().Get("lon"), 64)
 	// range is optional
-	ran := DISTANCE
+	ran := Distance
 	if val := r.URL.Query().Get("range"); val != "" {
 		ran = val + "km"
 	}
@@ -121,12 +126,12 @@ func handlerSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func createIndexIfNotExist() {
-	client, err := elastic.NewClient(elastic.SetURL(ES_URL), elastic.SetSniff(false))
+	client, err := elastic.NewClient(elastic.SetURL(ESURL), elastic.SetSniff(false))
 	if err != nil {
 		panic(err)
 	}
 
-	exists, err := client.IndexExists(POST_INDEX).Do(context.Background())
+	exists, err := client.IndexExists(PostIndex).Do(context.Background())
 	if err != nil {
 		panic(err)
 	}
@@ -143,7 +148,7 @@ func createIndexIfNotExist() {
                 }
             }
         }`
-		_, err = client.CreateIndex(POST_INDEX).Body(mapping).Do(context.Background())
+		_, err = client.CreateIndex(PostIndex).Body(mapping).Do(context.Background())
 		if err != nil {
 			panic(err)
 		}
@@ -152,14 +157,14 @@ func createIndexIfNotExist() {
 
 // Save a post to ElasticSearch
 func saveToES(post *Post, id string) error {
-	client, err := elastic.NewClient(elastic.SetURL(ES_URL), elastic.SetSniff(false))
+	client, err := elastic.NewClient(elastic.SetURL(ESURL), elastic.SetSniff(false))
 	if err != nil {
 		return err
 	}
 
 	_, err = client.Index().
-		Index(POST_INDEX).
-		Type(POST_TYPE).
+		Index(PostIndex).
+		Type(PostType).
 		Id(id).
 		BodyJson(post).
 		Refresh("wait_for").
@@ -172,8 +177,31 @@ func saveToES(post *Post, id string) error {
 	return nil
 }
 
+// Save a post to BigTable
+func saveToBT(post *Post, id string) {
+	ctx := context.Background()
+	btClient, err := bigtable.NewClient(ctx, ProjectID, BigTableInstance)
+	if err != nil {
+		panic(err)
+	}
+	tbl := btClient.Open("post")
+	mut := bigtable.NewMutation()
+	t := bigtable.Now()
+	mut.Set("post", "user", t, []byte(post.User))
+	mut.Set("post", "message", t, []byte(post.Message))
+	mut.Set("location", "lat", t, []byte(strconv.FormatFloat(post.Location.Lat, 'f', -1, 64)))
+	mut.Set("location", "lon", t, []byte(strconv.FormatFloat(post.Location.Lon, 'f', -1, 64)))
+
+	err = tbl.Apply(ctx, id, mut)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Post is saved to BigTable: %s\n", post.Message)
+
+}
+
 func readFromES(lat, lon float64, ran string) ([]Post, error) {
-	client, err := elastic.NewClient(elastic.SetURL(ES_URL), elastic.SetSniff(false))
+	client, err := elastic.NewClient(elastic.SetURL(ESURL), elastic.SetSniff(false))
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +210,7 @@ func readFromES(lat, lon float64, ran string) ([]Post, error) {
 	query = query.Distance(ran).Lat(lat).Lon(lon)
 
 	searchResult, err := client.Search().
-		Index(POST_INDEX).
+		Index(PostIndex).
 		Query(query).
 		Pretty(true).
 		Do(context.Background())
@@ -232,9 +260,9 @@ func saveToGCS(r io.Reader, bucketName, objectName string) (*storage.ObjectAttrs
 		return nil, err
 	}
 
-	if err = object.ACL().Set(ctx, storage.AllUsers, storage.RoleReader); err != nil {
-		return nil, err
-	}
+	// if err = object.ACL().Set(ctx, storage.AllUsers, storage.RoleReader); err != nil {
+	// 	return nil, err
+	// }
 
 	attrs, err := object.Attrs(ctx)
 	if err != nil {
