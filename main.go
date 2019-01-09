@@ -12,7 +12,10 @@ import (
 
 	"cloud.google.com/go/bigtable"
 	"cloud.google.com/go/storage"
+	jwtmiddleware "github.com/auth0/go-jwt-middleware"
+	jwt "github.com/dgrijalva/jwt-go"
 	"github.com/google/uuid"
+	"github.com/gorilla/mux"
 	"github.com/olivere/elastic"
 )
 
@@ -21,10 +24,11 @@ const (
 	PostType  = "post"
 
 	Distance         = "200km"
-	ESURL            = "http://35.196.39.116:9200"
-	BucketName       = "around-postimages"
+	ESURL            = "http://34.73.196.93:9200"
+	GCSBucketName    = "around-postimages"
 	ProjectID        = "around-225723"
 	BigTableInstance = "around-post"
+	Enable_BigTable  = false
 )
 
 type Location struct {
@@ -43,8 +47,20 @@ func main() {
 	fmt.Println("started-service")
 	createIndexIfNotExist()
 
-	http.HandleFunc("/post", handlerPost)
-	http.HandleFunc("/search", handlerSearch)
+	jwtMiddleware := jwtmiddleware.New(jwtmiddleware.Options{
+		ValidationKeyGetter: func(token *jwt.Token) (interface{}, error) {
+			return []byte(mySigningKey), nil
+		},
+		SigningMethod: jwt.SigningMethodHS256,
+	})
+
+	r := mux.NewRouter()
+	r.Handle("/post", jwtMiddleware.Handler(http.HandlerFunc(handlerPost))).Methods("POST")
+	r.Handle("/search", jwtMiddleware.Handler(http.HandlerFunc(handlerSearch))).Methods("GET")
+	r.Handle("/signin", http.HandlerFunc(handlerSignin)).Methods("POST")
+	r.Handle("/login", http.HandlerFunc(handlerLogin)).Methods("POST")
+
+	http.Handle("/", r)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
@@ -56,11 +72,15 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
 
+	user := r.Context().Value("user")
+	claims := user.(*jwt.Token).Claims
+	username := claims.(jwt.MapClaims)["username"]
+
 	lat, _ := strconv.ParseFloat(r.FormValue("lat"), 64)
 	lon, _ := strconv.ParseFloat(r.FormValue("lon"), 64)
 
 	p := &Post{
-		User:    r.FormValue("user"),
+		User:    username.(string),
 		Message: r.FormValue("message"),
 		Location: Location{
 			Lat: lat,
@@ -75,7 +95,7 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("Image is not available %v.\n", err)
 		return
 	}
-	attrs, err := saveToGCS(file, BucketName, id)
+	attrs, err := saveToGCS(file, GCSBucketName, id)
 	if err != nil {
 		http.Error(w, "Failed to save image to GCS", http.StatusInternalServerError)
 		fmt.Printf("Failed to save image to GCS %v.\n", err)
@@ -91,7 +111,9 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Printf("Saved one post to ElasticSearch: %s", p.Message)
 
-	saveToBT(p, id)
+	if Enable_BigTable {
+		saveToBT(p, id)
+	}
 }
 
 func handlerSearch(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +175,18 @@ func createIndexIfNotExist() {
 			panic(err)
 		}
 	}
+
+	exists, err = client.IndexExists(UserIndex).Do(context.Background())
+	if err != nil {
+		panic(err)
+	}
+
+	if !exists {
+		_, err = client.CreateIndex(UserType).Do(context.Background())
+		if err != nil {
+			panic(err)
+		}
+	}
 }
 
 // Save a post to ElasticSearch
@@ -180,24 +214,22 @@ func saveToES(post *Post, id string) error {
 // Save a post to BigTable
 func saveToBT(post *Post, id string) {
 	ctx := context.Background()
-	btClient, err := bigtable.NewClient(ctx, ProjectID, BigTableInstance)
+	client, err := bigtable.NewClient(ctx, ProjectID, BigTableInstance)
 	if err != nil {
 		panic(err)
 	}
-	tbl := btClient.Open("post")
+	tbl := client.Open("post")
 	mut := bigtable.NewMutation()
-	t := bigtable.Now()
-	mut.Set("post", "user", t, []byte(post.User))
-	mut.Set("post", "message", t, []byte(post.Message))
-	mut.Set("location", "lat", t, []byte(strconv.FormatFloat(post.Location.Lat, 'f', -1, 64)))
-	mut.Set("location", "lon", t, []byte(strconv.FormatFloat(post.Location.Lon, 'f', -1, 64)))
+	mut.Set("post", "user", bigtable.Now(), []byte(post.User))
+	mut.Set("post", "message", bigtable.Now(), []byte(post.Message))
+	mut.Set("location", "lat", bigtable.Now(), []byte(strconv.FormatFloat(post.Location.Lat, 'f', -1, 64)))
+	mut.Set("location", "lon", bigtable.Now(), []byte(strconv.FormatFloat(post.Location.Lon, 'f', -1, 64)))
 
 	err = tbl.Apply(ctx, id, mut)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("Post is saved to BigTable: %s\n", post.Message)
-
 }
 
 func readFromES(lat, lon float64, ran string) ([]Post, error) {
