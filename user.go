@@ -33,6 +33,10 @@ func handlerLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
+	if r.Method == "OPTIONS" {
+		return
+	}
+
 	decoder := json.NewDecoder(r.Body)
 	var user User
 	if err := decoder.Decode(&user); err != nil {
@@ -69,6 +73,10 @@ func handlerSignin(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Received one login request")
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method == "OPTIONS" {
+		return
+	}
 
 	decoder := json.NewDecoder(r.Body)
 	var user User
