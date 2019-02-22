@@ -19,7 +19,7 @@ type Prediction struct {
 	Scores     []float64 `json:"scores"`
 }
 
-type MlResponse struct {
+type MLResponse struct {
 	Predictions []Prediction `json:"predictions"`
 }
 
@@ -31,11 +31,11 @@ type Instance struct {
 	Key        string     `json:"key"`
 }
 
-type MlRequest struct {
+type MLRequest struct {
 	Instances []Instance `json:"instances"`
 }
 
-var (
+const (
 	project = "around-225723"
 	model   = "around_face"
 	url     = "https://ml.googleapis.com/v1/projects/" + project + "/models/" + model + ":predict"
@@ -55,7 +55,7 @@ func annotate(r io.Reader) (float64, error) {
 	tt, _ := ts.Token()
 
 	// Construct a ml request.
-	request := &MlRequest{
+	request := &MLRequest{
 		Instances: []Instance{
 			{
 				ImageBytes: ImageBytes{
@@ -78,11 +78,10 @@ func annotate(r io.Reader) (float64, error) {
 		fmt.Printf("failed to send ml request %v\n", err)
 		return 0.0, err
 	}
-	var resp MlResponse
+	var resp MLResponse
 	body, _ = ioutil.ReadAll(res.Body)
 
-	// Double check if the response is empty. Sometimes Google does not return an error instead just an
-	// empty response while usually it's due to auth.
+	// Double check if the response is empty. Sometimes Google does not return an error instead just an empty response while usually it's due to auth.
 	if len(body) == 0 {
 		fmt.Println("empty google response")
 		return 0.0, errors.New("empty google response")
@@ -93,12 +92,11 @@ func annotate(r io.Reader) (float64, error) {
 	}
 
 	if len(resp.Predictions) == 0 {
-		// If the response is not empty, Google returns a different format. Check the raw message.
-		// Sometimes it's due to the image format. Google only accepts jpeg don't send png or others.
+		// If the response is not empty, Google returns a different format. Check the raw message. Sometimes it's due to the image format. Google only accepts jpeg don't send png or others.
 		fmt.Printf("failed to parse response %s\n", string(body))
 		return 0.0, errors.Errorf("cannot parse response %s\n", string(body))
 	}
-	// TODO: update index based on your ml model.
+
 	results := resp.Predictions[0]
 	fmt.Printf("Received a prediction result %f\n", results.Scores[0])
 	return results.Scores[0], nil

@@ -25,7 +25,7 @@ const (
 	PostType  = "post"
 
 	Distance         = "200km"
-	ESURL            = "http://34.73.196.93:9200"
+	ESURL            = "http://34.73.64.68:9200"
 	GCSBucketName    = "around-postimages"
 	ProjectID        = "around-225723"
 	BigTableInstance = "around-post"
@@ -197,7 +197,6 @@ func handlerSearch(w http.ResponseWriter, r *http.Request) {
 func handlerCluster(w http.ResponseWriter, r *http.Request) {
 	// Parse from body of request to get a json object.
 	fmt.Println("Received one post request")
-
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
@@ -230,7 +229,6 @@ func handlerCluster(w http.ResponseWriter, r *http.Request) {
 		Pretty(true).
 		Do(context.Background())
 	if err != nil {
-		// Handle error
 		m := fmt.Sprintf("Failed to query ES %v", err)
 		fmt.Println(m)
 		http.Error(w, m, http.StatusInternalServerError)
@@ -242,9 +240,6 @@ func handlerCluster(w http.ResponseWriter, r *http.Request) {
 	// TotalHits is another convenience function that works even when something goes wrong.
 	fmt.Printf("Found a total of %d post\n", searchResult.TotalHits())
 
-	// Each is a convenience function that iterates over hits in a search result.
-	// It makes sure you don't need to check for nil values in the response.
-	// However, it ignores errors in serialization.
 	var typ Post
 	var ps []Post
 	for _, item := range searchResult.Each(reflect.TypeOf(typ)) {
